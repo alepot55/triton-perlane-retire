@@ -116,9 +116,58 @@ loop for sm_89 with and without the plugin and requires `redux.sync` to go from
 
 | Triton | LLVM | status |
 |---|---|---|
-| 3.9.0 (release wheel, 2026-10-27) | `b010a18d` | built and tested as above (CPU); `bench/bench_perlane_retire.py` on an RTX 4070 (torch 2.15.0+cu132, shared desktop, median of 9 launches, 3 runs): bit-exact against the oracle every time, `redux.sync` 1 to 0, speedup 2.91x, 2.83x, 2.16x (the third run was slower for both builds, probably load from other GPU users, not checked). The table above comes from main on the same card |
+| 3.9.0 (release wheel, 2026-10-27) | `b010a18d` | built and tested as above: 9 lit chunks pass, the PTX check passes. Bench on an RTX 4070 (driver 580.196.07, torch 2.15.0+cu132, GPU otherwise unused), 9 separate runs: bit-exact against the oracle in every run, `redux.sync` 1 to 0; speedup median 2.84x, min 2.19x, max 3.48x, the spread set by the CPU core the run lands on (see below); kernel only 3.70x to 3.71x |
 | main @ `81a46fa` (3.8.0-dev) | its own | the build the measurements come from; source-tree recipe |
-| 3.8.0 release | not tried | the loader there is `TRITON_PLUGIN_PATHS` at import; `enable()` keeps that path, untested |
+| 3.8.0 (release wheel) | `5f07f818` | the wheel ships no headers: built with the source-tree recipe against the `v3.8.0` tag (`include/`, `python/src/`), a hand-written `triton/Version.h` and the wheel's own library (`-DTRITON_LIB=<wheel>/_C/libtriton.so`); loaded with `TRITON_PLUGIN_PATHS` set before `import triton`, where the pass binds as `nv_per_lane_loop_retirement`. `test_compile_ptx.py` passes as it is; `run_tests.py` passes (9 chunks) once a shim outside the repo maps `passes.plugin.extend_with`, a 3.9 API, to a no-op. Bench, same card, torch 2.14.0+cu132, 9 runs: bit-exact, `redux.sync` 1 to 0; speedup median 2.26x, min 2.20x, max 2.92x; kernel only 3.70x |
+
+### Reading the bench (15 Nov 2026)
+
+`bench_perlane_retire.py` records a CUDA event, launches the kernel from
+Python, records a second event and synchronizes, nine times per build, after
+three warm-up launches. For launches 2 to 9, which start on an idle GPU, the
+window between the two events holds the host side of Triton's launch as well
+as the kernel. On the measuring machine (Intel i7-12700: 8 performance cores,
+4 efficiency cores) that host side costs 16 to 18 us more on an efficiency
+core, for both builds alike, so the ratio depends on where the process runs.
+Same card, both releases, every run bit-exact and without `redux.sync`:
+
+| Triton | runs | baseline us | retire us | speedup, median (min to max) |
+|---|---|---|---|---|
+| 3.9.0 | 9, unpinned | 4 at 92.2 to 92.9, 5 at 108.5 to 110.6 | 5 at 31.7 to 32.5, 4 at 49.2 to 50.0 | 2.84x (2.19x to 3.48x) |
+| 3.9.0 | 5, on a performance core | 93.0 (92.2 to 93.2) | 31.7 (31.7 to 32.4) | 2.91x (2.84x to 2.94x) |
+| 3.9.0 | 5, on an efficiency core | 109.5 (108.8 to 118.5) | 49.2 (48.1 to 50.9) | 2.27x (2.19x to 2.36x) |
+| 3.9.0 | kernel only, CUDA-graph replay | 76.3 | 20.6 | 3.70x to 3.71x |
+| 3.8.0 | 9, unpinned | 4 at 91.9 to 92.2, 5 at 107.5 to 108.5 | 4 at 31.5 to 31.7, 5 at 47.8 to 49.0 | 2.26x (2.20x to 2.92x) |
+| 3.8.0 | 5, on a performance core | 92.2 (91.2 to 92.2) | 31.6 (30.7 to 31.7) | 2.91x (2.90x to 2.97x) |
+| 3.8.0 | 5, on an efficiency core | 108.6 (107.5 to 109.6) | 48.1 (47.9 to 58.4) | 2.26x (1.87x to 2.28x) |
+| 3.8.0 | kernel only, CUDA-graph replay | 76.3 | 20.6 | 3.70x |
+
+Pinned runs alternated, one on each kind of core, five times; on each release
+their ranges do not overlap. The unpinned runs fall into the same two states,
+and their median only says how many runs landed on each kind of core: 5 of 9
+were slow on 3.8.0 and 4 of 9 on 3.9.0 (plus one, the 3.48x, that timed all
+nine baseline launches slow and all nine plugin launches fast, as if the
+process moved between the builds; the core was not recorded), hence 2.26x
+against 2.84x for the same kernel. The 2.91x, 2.83x and 2.16x of the first
+measurement on this card sit in or just outside the same two states (93.0/32.0
+and 92.3/32.6 fast, 110.6/51.1 slow; no per-launch times were kept).
+
+The GPU side is the same in both states. The first timed baseline launch is
+queued behind the warm-ups, so it times the kernel alone: 85.0 to 86.0 us in
+all 38 runs, on either core and either release. The GPU was otherwise unused
+(P8 and 0 % when each of the three jobs started; `nvidia-smi pmon` shows SM
+activity only from the bench's own processes), and the clock, sampled every
+200 ms, read P2, 2505 MHz graphics and 10251 MHz memory while bench processes
+ran, fast and slow alike.
+
+The kernel-only rows use `triton.testing.do_bench_cudagraph` on the same
+kernel, inputs and oracle. The replay keeps the GPU busy, at 2640 to 2730 MHz
+for most of it, so its absolute times are at a higher clock than the bench's.
+The 2.5x to 4.2x at the top is called end to end and came from a bench of
+this form on main; if it used the same launch-inclusive window, it may depend
+on the core as well. On this machine that window gives about 2.9x on a
+performance core and 2.3x on an efficiency core, and the kernels alone differ
+by 3.7x.
 
 The pipeline hook interposes on `add_warp_specialize_to_llvm` inside
 `make_llir` (the first point where the warp-uniform latch exists); if a
