@@ -59,39 +59,71 @@ with `bar.warp.sync` at the loop exit.
 
 ## Build
 
-Needs a Triton source/build tree compiled with `TRITON_EXT_ENABLED=1` and
-its LLVM/MLIR distribution:
+Against an installed Triton wheel (3.9.0 or later, the release `pip install
+triton` gives you; Python 3.11 or later) and the LLVM/MLIR artifact that
+release was built with. For Triton 3.9.0 that is `llvm-b010a18d-ubuntu-x64-1`,
+sha256 `a8f2966f...e78428`, from
+`https://oaitriton.blob.core.windows.net/public/llvm-builds/`
+(`ci/download_llvm.py` in [triton-ext](https://github.com/triton-lang/triton-ext)
+fetches and checks it). The wheel supplies the headers and `libtriton.so`;
+nothing of Triton is compiled.
 
 ```bash
-cmake -B build -G Ninja \
-  -DTRITON_SRC_DIR=/path/to/triton \
-  -DTRITON_LLVM_DIR=$HOME/.triton/llvm/<dist> \
-  -DCMAKE_BUILD_TYPE=Release
+pip install triton==3.9.0
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DTRITON_WHEEL_DIR=$(python -c 'import triton,os;print(os.path.dirname(triton.__file__))') \
+  -DTRITON_LLVM_DIR=/path/to/llvm-b010a18d-ubuntu-x64-1
 ninja -C build
 ```
 
+Against a Triton source/build tree compiled with `TRITON_EXT_ENABLED=1`
+(Triton main) the old recipe still works: replace `TRITON_WHEEL_DIR` with
+`-DTRITON_SRC_DIR=/path/to/triton` (and `-DTRITON_BUILD_DIR` if it is not an
+in-source build).
+
 ## Use
 
-```bash
-export TRITON_PLUGIN_PATHS=/path/to/build/libPerLaneLoopRetirement.so
-export PYTHONPATH=/path/to/triton-perlane-retire/python:$PYTHONPATH
-```
-
 ```python
-import perlane_retire
-perlane_retire.enable()   # installs the (cache-key aware) pipeline hook
+import perlane_retire          # python/ on PYTHONPATH
+perlane_retire.enable("/path/to/build/libPerLaneLoopRetirement.so")
 # ... define and launch Triton kernels as usual
 ```
 
+The library path can also come from `PERLANE_RETIRE_LIB`. On Triton 3.9 and
+later `enable()` registers the plugin with `passes.plugin.extend_with`; that
+release no longer reads `TRITON_PLUGIN_PATHS`, so setting the variable alone does
+nothing there. The compile-cache key includes the plugin library, so rebuilding
+it recompiles cached kernels.
+
 `bench/bench_perlane_retire.py` reproduces the headline result end-to-end
-(bit-exact oracle + PTX `redux.sync` 1→0).
+(bit-exact oracle + PTX `redux.sync` 1→0); it needs a GPU.
 
-## Pinned version
+## Tests (no GPU)
 
-Developed and tested against Triton main @ `81a46fa` (3.8.0-dev). The
-pipeline hook interposes on `add_warp_specialize_to_llvm` inside
+```bash
+python test/run_tests.py build/libPerLaneLoopRetirement.so        # 9 lit chunks
+PERLANE_RETIRE_LIB=build/libPerLaneLoopRetirement.so \
+  PYTHONPATH=python python test/test_compile_ptx.py               # PTX for sm_89
+```
+
+`run_tests.py` replays `test/nv_per_lane_loop_retirement.mlir` with the
+`FileCheck` binary bundled in the wheel and checks the `expected-remark` lines
+(the wheel has no `triton-opt`). `test_compile_ptx.py` compiles the canonical
+loop for sm_89 with and without the plugin and requires `redux.sync` to go from
+1 to 0 and a `bar.warp.sync` to appear; ptxas accepts the result.
+
+## Tested versions
+
+| Triton | LLVM | status |
+|---|---|---|
+| 3.9.0 (release wheel, 2026-10-27) | `b010a18d` | built and tested as above (CPU); GPU numbers below were taken earlier on main |
+| main @ `81a46fa` (3.8.0-dev) | its own | the build the measurements come from; source-tree recipe |
+| 3.8.0 release | not tried | the loader there is `TRITON_PLUGIN_PATHS` at import; `enable()` keeps that path, untested |
+
+The pipeline hook interposes on `add_warp_specialize_to_llvm` inside
 `make_llir` (the first point where the warp-uniform latch exists); if a
-future Triton renames that anchor, `enable()` fails loudly.
+future Triton renames that anchor, `enable()` fails loudly. The anchor and the
+`add_stages_inspection_hook` contract are unchanged in 3.9.0.
 
 ## License
 
