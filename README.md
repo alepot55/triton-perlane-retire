@@ -116,7 +116,7 @@ loop for sm_89 with and without the plugin and requires `redux.sync` to go from
 
 | Triton | LLVM | status |
 |---|---|---|
-| 3.9.0 (release wheel, 2026-10-27) | `b010a18d` | built and tested as above (CPU); GPU numbers below were taken earlier on main |
+| 3.9.0 (release wheel, 2026-10-27) | `b010a18d` | built and tested as above (CPU); `bench/bench_perlane_retire.py` on an RTX 4070 (torch 2.15.0+cu132, shared desktop, median of 9 launches, 3 runs): bit-exact against the oracle every time, `redux.sync` 1 to 0, speedup 2.91x, 2.83x, 2.16x (the third run was slower for both builds, probably load from other GPU users, not checked). The table above comes from main on the same card |
 | main @ `81a46fa` (3.8.0-dev) | its own | the build the measurements come from; source-tree recipe |
 | 3.8.0 release | not tried | the loader there is `TRITON_PLUGIN_PATHS` at import; `enable()` keeps that path, untested |
 
