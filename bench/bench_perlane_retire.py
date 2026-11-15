@@ -5,7 +5,7 @@ plugin pass enabled -- checks both against an exact CPU oracle, and reports
 timings and the PTX-level evidence (redux.sync count).
 
 Usage:
-  TRITON_PLUGIN_PATHS=<build>/libPerLaneLoopRetirement.so \
+  PERLANE_RETIRE_LIB=<build>/libPerLaneLoopRetirement.so \
   PYTHONPATH=<this repo>/python \
     python bench/bench_perlane_retire.py
 """
